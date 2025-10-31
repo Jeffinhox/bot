@@ -1,0 +1,103 @@
+import os
+import discord
+from discord.ext import commands
+import asyncio
+import yt_dlp
+import subprocess
+
+# Instala o ffmpeg automaticamente se não existir
+if not os.path.exists("ffmpeg.exe"):
+    try:
+        subprocess.run(
+            ["apt", "update", "-y"], check=True
+        )
+        subprocess.run(
+            ["apt", "install", "ffmpeg", "-y"], check=True
+        )
+    except Exception as e:
+        print(f"⚠️ Falha ao instalar ffmpeg: {e}")
+
+# Configuração do bot
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Fila de músicas
+queues = {}
+
+# Função para tocar a próxima música
+async def play_next(ctx):
+    if queues.get(ctx.guild.id):
+        url = queues[ctx.guild.id].pop(0)
+        await play_music(ctx, url)
+
+async def play_music(ctx, url):
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "outtmpl": "song.%(ext)s"
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        audio_url = info["url"]
+
+    voice_client = ctx.voice_client
+    if not voice_client:
+        if ctx.author.voice:
+            channel = ctx.author.voice.channel
+            voice_client = await channel.connect()
+        else:
+            await ctx.send("❌ Você precisa estar em um canal de voz!")
+            return
+
+    source = await discord.FFmpegOpusAudio.from_probe(audio_url, method='fallback')
+    voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+    await ctx.send(f"🎶 Tocando: **{info['title']}**")
+
+# Eventos e comandos
+@bot.event
+async def on_ready():
+    print(f"✅ JBL Bot online como {bot.user}")
+
+@bot.command()
+async def play(ctx, *, url):
+    if ctx.guild.id not in queues:
+        queues[ctx.guild.id] = []
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        queues[ctx.guild.id].append(url)
+        await ctx.send("➕ Adicionada à fila!")
+    else:
+        await play_music(ctx, url)
+
+@bot.command()
+async def skip(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭️ Música pulada!")
+
+@bot.command()
+async def stop(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        queues[ctx.guild.id] = []
+        await ctx.send("🛑 Parei a música e saí do canal.")
+
+@bot.command()
+async def pause(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸️ Pausado!")
+
+@bot.command()
+async def resume(ctx):
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Continuando!")
+
+@bot.command()
+async def volume(ctx, vol: int):
+    if ctx.voice_client and ctx.voice_client.source:
+        ctx.voice_client.source.volume = vol / 100
+        await ctx.send(f"🔊 Volume ajustado para {vol}%")
+
+bot.run(os.getenv("DISCORD_TOKEN"))
